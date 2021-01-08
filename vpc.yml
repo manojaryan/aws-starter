@@ -1,0 +1,445 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+    This template deploys a VPC, with a pair of public and private subnets spread 
+    across three Availabilty Zones. It deploys an Internet Gateway, with a default 
+    route on the public subnets. It deploys a NAT Gateways by deafult in one region if select true in variable,it will deploy in 3 zones 
+    and default routes for them in the private subnets.
+
+Parameters:
+  VpcCidrParam:
+    Type: String
+    Description: VPC CIDR. 
+    Default: "10.192.0.0/16"
+
+  # Public Subnets
+  PublicAZASubnetBlock:
+    Type: String
+    Description: Subnet CIDR for first Availability Zone
+    Default: "10.192.10.0/24"
+
+  PublicAZBSubnetBlock:
+    Type: String
+    Description: Subnet CIDR for second Availability Zone
+    Default: "10.192.11.0/24"
+
+  PublicAZCSubnetBlock:
+    Type: String
+    Description: Subnet CIDR for third Availability Zone
+    Default: "10.192.12.0/24"
+
+  # Private Subnets
+  PrivateAZASubnetBlock:
+    Type: String
+    Description: Subnet CIDR for first Availability Zone (e.g. us-west-2a, us-east-1b)
+    Default: "10.192.20.0/24"
+
+  PrivateAZBSubnetBlock:
+    Type: String
+    Description: Subnet CIDR for second Availability Zone (e.g. us-west-2b, us-east-1c)
+    Default: "10.192.21.0/24"
+
+  PrivateAZCSubnetBlock:
+    Type: String
+    Description: Subnet CIDR for third Availability Zone, (e.g. us-west-2c, us-east-1d)
+    Default: "10.192.22.0/24"
+
+  HighlyAvailableNat:
+    Type: String
+    Description: Optional configuration for a NAT Gateway setup. Default configuration is a single NAT Gateway in Subnet A. The highly available option will configure a NAT Gateway in each one of the Subnets.
+    AllowedPattern: "^(true|false)$"
+    Default: "false"
+
+Conditions:
+  HighlyAvailable: !Equals [!Ref HighlyAvailableNat, "true"]
+  NotHighlyAvailable: !Equals [!Ref HighlyAvailableNat, "false"]
+
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidrParam
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref Vpc
+
+  # Public Subnets - Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public
+        - Key: Type
+          Value: public
+
+  PublicSubnetsRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+    DependsOn: VPCGatewayAttachment
+
+  # Public Subnets
+  # First Availability Zone
+  PublicAZASubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicAZASubnetBlock
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-public-${AZ}
+            - { AZ: !Select [0, !GetAZs ""] }
+        - Key: Type
+          Value: public
+
+  PublicAZASubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicAZASubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Second Availability Zone
+  PublicAZBSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicAZBSubnetBlock
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-public-${AZ}
+            - { AZ: !Select [1, !GetAZs ""] }
+        - Key: Type
+          Value: public
+
+  PublicAZBSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicAZBSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Third Availability Zone
+  PublicAZCSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicAZCSubnetBlock
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-public-${AZ}
+            - { AZ: !Select [2, !GetAZs ""] }
+        - Key: Type
+          Value: public
+
+  PublicAZCSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicAZCSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Private Subnets - NAT Gateways
+  # First Availability Zone
+  AZANatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+    DependsOn: VPCGatewayAttachment
+
+  AZANatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt AZANatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicAZASubnet
+
+  # Second Availability Zone
+  AZBNatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Condition: HighlyAvailable
+    Properties:
+      Domain: vpc
+    DependsOn: VPCGatewayAttachment
+
+  AZBNatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: HighlyAvailable
+    Properties:
+      AllocationId: !GetAtt AZBNatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicAZBSubnet
+
+  # Third Availability Zone
+  AZCNatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Condition: HighlyAvailable
+    Properties:
+      Domain: vpc
+    DependsOn: VPCGatewayAttachment
+
+  AZCNatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: HighlyAvailable
+    Properties:
+      AllocationId: !GetAtt AZCNatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicAZCSubnet
+
+  # Private Subnets
+  # First Availability Zone
+  PrivateAZASubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateAZASubnetBlock
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-private-${AZ}
+            - { AZ: !Select [0, !GetAZs ""] }
+        - Key: Type
+          Value: private
+
+  PrivateAZARouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-private-${AZ}
+            - { AZ: !Select [0, !GetAZs ""] }
+        - Key: Type
+          Value: private
+
+  PrivateAZARoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateAZARouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref AZANatGateway
+
+  PrivateAZARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateAZASubnet
+      RouteTableId: !Ref PrivateAZARouteTable
+
+  # # Second Availability Zone
+  PrivateAZBSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateAZBSubnetBlock
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-private-${AZ}
+            - { AZ: !Select [1, !GetAZs ""] }
+        - Key: Type
+          Value: private
+
+  PrivateAZBRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-private-${AZ}
+            - { AZ: !Select [1, !GetAZs ""] }
+        - Key: Type
+          Value: private
+
+  PrivateAZBRoute:
+    Type: AWS::EC2::Route
+    Condition: HighlyAvailable
+    Properties:
+      RouteTableId: !Ref PrivateAZBRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref AZBNatGateway
+
+  PrivateAZBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: HighlyAvailable
+    Properties:
+      SubnetId: !Ref PrivateAZBSubnet
+      RouteTableId: !Ref PrivateAZBRouteTable
+
+  NotHighlyAvailablePrivateAZBRoute:
+    Type: AWS::EC2::Route
+    Condition: NotHighlyAvailable
+    Properties:
+      RouteTableId: !Ref PrivateAZBRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref AZANatGateway
+
+  NotHighlyAvailablePrivateAZBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: NotHighlyAvailable
+    Properties:
+      SubnetId: !Ref PrivateAZBSubnet
+      RouteTableId: !Ref PrivateAZBRouteTable
+
+  # Third Availability Zone
+  PrivateAZCSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateAZCSubnetBlock
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-private-${AZ}
+            - { AZ: !Select [2, !GetAZs ""] }
+        - Key: Type
+          Value: private
+
+  PrivateAZCRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - ${AWS::StackName}-private-${AZ}
+            - { AZ: !Select [2, !GetAZs ""] }
+        - Key: Type
+          Value: private
+
+  PrivateAZCRoute:
+    Type: AWS::EC2::Route
+    Condition: HighlyAvailable
+    Properties:
+      RouteTableId: !Ref PrivateAZCRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref AZCNatGateway
+
+  PrivateAZCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: HighlyAvailable
+    Properties:
+      SubnetId: !Ref PrivateAZCSubnet
+      RouteTableId: !Ref PrivateAZCRouteTable
+  
+  NotHighlyAvailablePrivateAZCRoute:
+    Type: AWS::EC2::Route
+    Condition: NotHighlyAvailable
+    Properties:
+      RouteTableId: !Ref PrivateAZCRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref AZANatGateway
+
+  NotHighlyAvailablePrivateAZCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: NotHighlyAvailable
+    Properties:
+      SubnetId: !Ref PrivateAZCSubnet
+      RouteTableId: !Ref PrivateAZCRouteTable
+
+  S3VPCEndpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    Properties:
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref PrivateAZARouteTable
+        - !Ref PrivateAZBRouteTable
+        - !Ref PrivateAZCRouteTable
+      ServiceName: !Join
+        - ""
+        - - com.amazonaws.
+          - !Ref "AWS::Region"
+          - .s3
+      VpcId: !Ref Vpc
+
+Outputs:
+  VpcId:
+    Description: VPC Id
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub "${AWS::StackName}-vpc-id"
+
+  PublicRouteTableId:
+    Description: Route Table for public subnets
+    Value: !Ref PublicRouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}-public-rtb"
+
+  PublicAZASubnetId:
+    Description: Availability Zone A public subnet Id
+    Value: !Ref PublicAZASubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-public-az-a-subnet"
+
+  PublicAZBSubnetId:
+    Description: Availability Zone B public subnet Id
+    Value: !Ref PublicAZBSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-public-az-b-subnet"
+
+  PublicAZCSubnetId:
+    Description: Availability Zone C public subnet Id
+    Value: !Ref PublicAZCSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-public-az-c-subnet"
+
+  PrivateAZASubnetId:
+    Description: Availability Zone A private subnet Id
+    Value: !Ref PrivateAZASubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-private-az-a-subnet"
+
+  PrivateAZBSubnetId:
+    Description: Availability Zone B private subnet Id
+    Value: !Ref PrivateAZBSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-private-az-b-subnet"
+
+  PrivateAZCSubnetId:
+    Description: Availability Zone C private subnet Id
+    Value: !Ref PrivateAZCSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-private-az-c-subnet"
+
+  PrivateAZARouteTableId:
+    Description: Route table for private subnets in AZ A
+    Value: !Ref PrivateAZARouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}-private-az-a-rtb"
+
+  PrivateAZBRouteTableId:
+    Description: Route table for private subnets in AZ B
+    Value: !Ref PrivateAZBRouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}-private-az-b-rtb"
+
+  PrivateAZCRouteTableId:
+    Description: Route table for private subnets in AZ C
+    Value: !Ref PrivateAZCRouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}-private-az-c-rtb"

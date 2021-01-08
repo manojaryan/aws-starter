@@ -1,0 +1,618 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: united Infra Stack
+
+Parameters:
+  Env:
+    Type: String
+    Description: Enter env name
+
+Mappings:
+  Region:
+    us-east-1: # US East (N. Virginia)
+      CIDR: '172.11'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::127311923021:root'
+    us-east-2: # US East (Ohio)
+      CIDR: '172.12'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::033677994240:root'
+    us-west-1: # US West (N. California)
+      CIDR: '172.21'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::027434742980:root'
+    us-west-2: # US West (Oregon)
+      CIDR: '172.22'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::797873946194:root'
+    ca-central-1: # Canada (Central)
+      CIDR: '172.31'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::985666609251:root'
+    eu-central-1: # EU (Frankfurt)
+      CIDR: '172.41'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::054676820928:root'
+    eu-west-1: # EU (Ireland)
+      CIDR: '172.51'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::156460612806:root'
+    eu-west-2: # EU (London)
+      CIDR: '172.52'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::652711504416:root'
+    eu-west-3: # EU (Paris)
+      CIDR: '172.53'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::009996457667:root'
+    ap-northeast-1: # Asia Pacific (Tokyo)
+      CIDR: '172.111'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::582318560864:root'
+    ap-northeast-2: # Asia Pacific (Seoul)
+      CIDR: '172.112'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::600734575887:root'
+    ap-northeast-3: # Asia Pacific (Osaka-Local)
+      CIDR: '172.113'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::383597477331:root'
+    ap-south-1: # Asia Pacific (Mumbai)
+      CIDR: '172.121'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::114774131450:root'
+    ap-southeast-1: # Asia Pacific (Singapore)
+      CIDR: '172.131'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::783225319266:root'
+    ap-southeast-2: # Asia Pacific (Sydney)
+      CIDR: '172.132'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::718504428378:root'
+    sa-east-1: # South America (São Paulo)
+      CIDR: '172.201'
+      LoadBalanceLogPrincipal: 'arn:aws:iam::507241528517:root'
+
+
+Resources:
+  # Commons
+  S3Logs:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'united-${Env}-logs-${AWS::Region}'
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+  ELBLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3Logs'
+      PolicyDocument:
+        Id: ELBLogsBucketPolicy
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !FindInMap [Region, !Ref 'AWS::Region', 'LoadBalanceLogPrincipal']
+            Action: 's3:PutObject'
+            Resource: !Sub '${S3Logs.Arn}/*ELBLogs/${AWS::AccountId}/*'
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'united ${Env} Key'
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: !Sub 'united-${Env}-${AWS::Region}-KMSKey'
+        Statement:
+          - Sid: 'Allow'
+            Effect: 'Allow'
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-${AWS::Region}-key'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  KMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/united/${Env}/${AWS::Region}'
+      TargetKeyId: !Ref 'KMSKey'
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.0.0/16']]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-vpc-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  VPCFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      TrafficType: ALL
+      ResourceType: VPC
+      ResourceId: !Ref 'VPC'
+      LogDestinationType: s3
+      LogDestination: !GetAtt [S3Logs, Arn]
+
+  # Subnet
+  ## Public
+  SubnetPublic1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.10.0/23']]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'public', !Select [0, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  SubnetPublic2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.12.0/23']]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'public', !Select [1, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+
+  ## united
+  Subnetunited1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.100.0/23']]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'united', !Select [0, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  Subnetunited2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.102.0/23']]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'united', !Select [1, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  ## Cache
+  SubnetCache1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.50.0/23']]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'cache', !Select [0, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  SubnetCache2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.52.0/23']]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'cache', !Select [1, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  SubnetGroupCache:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !Sub 'united-${Env}-subnet-group-cache-${AWS::Region}'
+      Description: 'Cache Subnet Group'
+      SubnetIds:
+        - !Ref 'SubnetCache1'
+        - !Ref 'SubnetCache2'
+  ## Database
+  SubnetDatabase1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.60.0/23']]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'db', !Select [0, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  SubnetDatabase2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref 'VPC'
+      CidrBlock: !Join ['', [!FindInMap [Region, !Ref 'AWS::Region', CIDR], '.62.0/23']]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'subnet', 'db', !Select [1, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  SubnetGroupDatabase:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub 'united-${Env}-subnet-group-db-${AWS::Region}'
+      DBSubnetGroupDescription: 'DB SubnetGroup'
+      SubnetIds:
+        - !Ref 'SubnetDatabase1'
+        - !Ref 'SubnetDatabase2'
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-subnet-group-db-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  # Route
+  ## Public
+  ### InternetGateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-internet-gateway-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  VPCToInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+  ### RouteTable
+  RouteTablePublic:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-route-table-public-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  RoutePublic:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'RouteTablePublic'
+      GatewayId: !Ref 'InternetGateway'
+      DestinationCidrBlock: '0.0.0.0/0'
+
+  ### Association
+  SubnetRouteTableAssociationPublic1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePublic'
+      SubnetId: !Ref 'SubnetPublic1'
+  SubnetRouteTableAssociationPublic2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePublic'
+      SubnetId: !Ref 'SubnetPublic2'
+
+  ## Private
+  ### NAT
+  NatGatewayEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt [NatGatewayEIP1, AllocationId]
+      SubnetId: !Ref 'SubnetPublic1'
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'nat', 'gateway', !Select [0, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  NatGatewayEIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt [NatGatewayEIP2, AllocationId]
+      SubnetId: !Ref 'SubnetPublic2'
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'nat', 'gateway', !Select [1, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  ### RouteTable
+  RouteTablePrivate1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'route', 'table', 'private', !Select [0, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  RoutePrivate1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate1'
+      NatGatewayId: !Ref 'NatGateway1'
+      DestinationCidrBlock: '0.0.0.0/0'
+
+  RouteTablePrivate2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+        - Key: Name
+          Value: !Join ['-', ['united', !Ref 'Env', 'route', 'table', 'private', !Select [1, !GetAZs '']]]
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  RoutePrivate2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate2'
+      NatGatewayId: !Ref 'NatGateway2'
+      DestinationCidrBlock: '0.0.0.0/0'
+
+  ### Association
+  SubnetRouteTableAssociationunited1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate1'
+      SubnetId: !Ref 'Subnetunited1'
+  SubnetRouteTableAssociationunited2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate2'
+      SubnetId: !Ref 'Subnetunited2'
+  SubnetRouteTableAssociationCache1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate1'
+      SubnetId: !Ref 'SubnetCache1'
+  SubnetRouteTableAssociationCache2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate2'
+      SubnetId: !Ref 'SubnetCache2'
+  SubnetRouteTableAssociationDatabase1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate1'
+      SubnetId: !Ref 'SubnetDatabase1'
+  SubnetRouteTableAssociationDatabase2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTablePrivate2'
+      SubnetId: !Ref 'SubnetDatabase2'
+  # Endpoint
+  VPCEndpointToS3:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: 'Gateway'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref 'VPC'
+      RouteTableIds:
+        - !Ref 'RouteTablePublic'
+        - !Ref 'RouteTablePrivate1'
+        - !Ref 'RouteTablePrivate2'
+  # SecurityGroup
+  ## united
+  SecurityGroupunited:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupName: !Sub 'united-${Env}-united-${AWS::Region}'
+      GroupDescription: !Sub 'united-${Env}-united-${AWS::Region}'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          SourceSecurityGroupId: !Ref 'SecurityGroupELBPublic'
+        - IpProtocol: -1
+          SourceSecurityGroupId: !Ref 'SecurityGroupELBInternal'
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-united-${AWS::Region}'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  ## ELB
+  SecurityGroupELBPublic:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupName: !Sub 'united-${Env}-elb-public-${AWS::Region}'
+      GroupDescription: !Sub 'united-${Env}-elb-public-${AWS::Region}'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-elb-public-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  SecurityGroupELBInternal:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupName: !Sub 'united-${Env}-elb-internal-${AWS::Region}'
+      GroupDescription: !Sub 'united-${Env}-elb-internal-${AWS::Region}'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-elb-internal-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  # Database
+  SecurityGroupDatabase:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupName: !Sub 'united-${Env}-database-${AWS::Region}'
+      GroupDescription: !Sub 'united-${Env}-database-${AWS::Region}'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref 'SecurityGroupunited'
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-database-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+  # Cache
+  SecurityGroupCache:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupName: !Sub 'united-${Env}-cache-${AWS::Region}'
+      GroupDescription: !Sub 'united-${Env}-cache-${AWS::Region}'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref 'SecurityGroupunited'
+      Tags:
+        - Key: Name
+          Value: !Sub 'united-${Env}-cache-${AWS::Region}'
+        - Key: Env
+          Value: !Ref 'Env'
+        - Key: Region
+          Value: !Ref 'AWS::Region'
+
+Outputs:
+  S3Logs:
+    Description: S3 Log Bucket
+    Value: !Ref 'S3Logs'
+    Export:
+      Name: !Sub 'united-${Env}-S3Logs'
+  KMSKey:
+    Description: KMS Key
+    Value: !Ref 'KMSKey'
+    Export:
+      Name: !Sub 'united-${Env}-${AWS::Region}-KMSKey'
+  VPC:
+    Description: VPC ID
+    Value: !Ref 'VPC'
+    Export:
+      Name: !Sub 'united-${Env}-VPC'
+  SubnetPublic1:
+    Description: Subnet Public ID
+    Value: !Ref 'SubnetPublic1'
+    Export:
+      Name: !Sub 'united-${Env}-SubnetPublic1'
+  SubnetPublic2:
+    Description: Subnet Public ID
+    Value: !Ref 'SubnetPublic2'
+    Export:
+      Name: !Sub 'united-${Env}-SubnetPublic2'
+  Subnetunited1:
+    Description: Subnet united1
+    Value: !Ref 'Subnetunited1'
+    Export:
+      Name: !Sub 'united-${Env}-Subnetunited1'
+  Subnetunited2:
+    Description: Subnet united2
+    Value: !Ref 'Subnetunited2'
+    Export:
+      Name: !Sub 'united-${Env}-Subnetunited2'
+  SubnetGroupCache:
+    Description: Subnet Group Cache
+    Value: !Ref 'SubnetGroupCache'
+    Export:
+      Name: !Sub 'united-${Env}-SubnetGroupCache'
+  SubnetGroupDatabase:
+    Description: Subnet Group Database
+    Value: !Ref 'SubnetGroupDatabase'
+    Export:
+      Name: !Sub 'united-${Env}-SubnetGroupDatabase'
+  SecurityGroupunited:
+    Description: SecurityGroup united
+    Value: !Ref 'SecurityGroupunited'
+    Export:
+      Name: !Sub 'united-${Env}-SecurityGroupunited'
+  SecurityGroupELBPublic:
+    Value: !Ref 'SecurityGroupELBPublic'
+    Export:
+      Name: !Sub 'united-${Env}-SecurityGroupELBPublic'
+  SecurityGroupELBInternal:
+    Value: !Ref 'SecurityGroupELBInternal'
+    Export:
+      Name: !Sub 'united-${Env}-SecurityGroupELBInternal'
+  SecurityGroupDatabase:
+    Value: !Ref 'SecurityGroupDatabase'
+    Export:
+      Name: !Sub 'united-${Env}-SecurityGroupDatabase'
+  SecurityGroupCache:
+    Value: !Ref 'SecurityGroupCache'
+    Export:
+      Name: !Sub 'united-${Env}-SecurityGroupCache'
+
